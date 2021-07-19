@@ -189,23 +189,29 @@ def format(message, now=0, lat=0, lon=0, orientation=0):
     """
     Formats data into nmea message
     """
+    lon = float(lon)
+    lat = float(lat)
+    orientation = float(orientation)
     now = datetime.now()
     latdir = "N" if lat > 0 else "S"
     londir = "E" if lon > 0 else "W"
     lat = abs(lat)
     lon = abs(lon)
 
-    msg = message.format(date=now.strftime("%d%m%y"),
-                         hours=now.hour,
-                         minutes=now.minute,
-                         seconds=(now.second + now.microsecond/1000000.0),
-                         lat=floor(lat),
-                         latmin=(lat % 1) * 60,
-                         latdir=latdir,
-                         lon=floor(lon),
-                         lonmin=(lon % 1) * 60,
-                         londir=londir,
-                         orientation=orientation)
+    msg = message.format(
+        date=now.strftime("%d%m%y"),
+        hours=now.hour,
+        minutes=now.minute,
+        seconds=now.second + now.microsecond/1000000.0,
+        lat=floor(lat),
+        latmin=(lat % 1) * 60.0,
+        latdir=latdir,
+        lon=floor(lon),
+        lonmin=(lon % 1) * 60.0,
+        londir=londir,
+        orientation=orientation
+    )
+
     return msg + ("%02x\r\n" % calculateNmeaChecksum(msg)).upper()
 
 
@@ -231,6 +237,7 @@ def wait_for_waterlinked():
     while True:
         report_status("scanning for Water Linked underwater GPS...")
         try:
+            # Equivalent: curl -X GET "http://192.168.2.94:80/api/v1/about/"
             requests.get(gpsUrl + '/api/v1/about/', timeout=1)
             break
         except Exception as error:
@@ -260,7 +267,7 @@ def processMasterPosition(response, *args, **kwargs):
                 )
             qgc_nmea_socket.sendto(msg, ('192.168.2.1', 14401))
     except Exception as error:
-        report_status("Error reading master position: " + error)
+        report_status("Error reading master position: " + str(error))
 
 
 def processLocatorPosition(response, *args, **kwargs):
@@ -291,6 +298,7 @@ socket_mavproxy = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 socket_mavproxy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 socket_mavproxy.setblocking(0)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Driver for the Water Linked Underwater GPS system.")
     parser.add_argument('--ip', action="store", type=str, default="demo.waterlinked.com", help="remote ip to query on.")
@@ -313,55 +321,50 @@ if __name__ == "__main__":
     # Sets GPS type to MAVLINK
     set_param("GPS_TYPE", "MAV_PARAM_TYPE_UINT8", 14)
 
-    # update at 5Hz
     update_period = 0.25
-    last_master_update = 0
-    last_locator_update = 0
-    last_position_update = 0
+    last_update = 0
 
     depth_endpoint = gpsUrl + "/api/v1/external/depth"
-    ext_depth = {}
     orientation_endpoint = gpsUrl + "/api/v1/external/orientation"
-    ext_orientation = {}
     locator_endpoint = gpsUrl + "/api/v1/position/global"
     master_endpoint = gpsUrl + "/api/v1/position/master"
 
-    # TODO: upgrade this to async once we have Python >= 3.6
+    ext_depth = {}
+    ext_orientation = {}
+
     while True:
         time.sleep(0.02)
-        if time.time() > last_locator_update + update_period:
-            last_locator_update = time.time()
+        if time.time() > last_update + update_period:
+            last_update = time.time()
 
+            # Locator
             response = request(locator_endpoint)
             if response:
                 processLocatorPosition(response)
             else:
                 report_status("Unable to fetch Locator position from Waterlinked API")
 
-        if time.time() > last_master_update + update_period:
-            last_master_update = time.time()
-
+            # Master
             response = request(master_endpoint)
             if response:
                 processMasterPosition(response)
             else:
                 report_status("Unable to fetch Master position from Waterlinked API")
 
-        if time.time() < last_position_update + update_period:
-            continue
-        try:
-            last_position_update = time.time()
-            # send depth and temprature information
-            ext_depth['depth'] = get_depth()
-            ext_depth['temp'] = get_temperature()
-            # Equivalent
-            # curl -X PUT -H "Content-Type: application/json" -d '{"depth":1,"temp":2}' "http://37.139.8.112:8000/api/v1/external/depth"
-            requests.put(depth_endpoint, json=ext_depth, timeout=1)
+            # Position
+            try:
+                # send depth and temprature information
+                ext_depth['depth'] = get_depth()
+                ext_depth['temp'] = get_temperature()
+                # Equivalent
+                # curl -X PUT -H "Content-Type: application/json" -d '{"depth":1,"temp":2}' "http://37.139.8.112:8000/api/v1/external/depth"
+                requests.put(depth_endpoint, json=ext_depth, timeout=1)
 
-            # Send heading to external/orientation api
-            ext_orientation['orientation'] = max(min(360, get_orientation()), 0)
-            requests.put(orientation_endpoint, json=ext_orientation, timeout=1)
-            report_status("Running")
+                # Send heading to external/orientation api
+                ext_orientation['orientation'] = max(min(360, get_orientation()), 0)
+                requests.put(orientation_endpoint, json=ext_orientation, timeout=1)
+                report_status("Running")
 
-        except Exception as error:
-            report_status("Error: ", str(error))
+
+            except Exception as error:
+                report_status("Error: ", str(error))
